@@ -21,6 +21,9 @@ from megatron.training import pretrain
 
 if __name__ == "__main__":
     neox_args = NeoXArgs.consume_neox_args()
+    # print('==== neox_args ====')
+    # print(neox_args)
+    # print('==== neox_args ====')
     neox_args.configure_distributed_args()
     neox_args.build_tokenizer()  # tokenizer needs to be build in training in order to set the padding vocab
     neox_args.initialize_tensorboard_writer()  # is initialized if tensorboard directory is defined

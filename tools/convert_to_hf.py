@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 import torch
 from transformers import GPTNeoXConfig, GPTNeoXForCausalLM
-
+from typing import List
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
@@ -41,7 +41,8 @@ Please investigate carefully whether your model is compatible with all architect
 
 def load_partitions(
     input_checkpoint_path, mp_partitions, layer_idx
-) -> list[torch.Tensor]:
+# ) -> list[torch.Tensor]:
+) -> List[torch.Tensor]:
     """Returns a list containing all weights in a given layer from a model (across MP partitions)"""
 
     loaded_tp_ranks = [

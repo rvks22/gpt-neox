@@ -86,12 +86,15 @@ RUN mkdir -p /home/mchorse/.ssh /job && \
     echo 'export LD_LIBRARY_PATH=/usr/local/lib:/usr/local/mpi/lib:/usr/local/mpi/lib64:$LD_LIBRARY_PATH' >> /home/mchorse/.bashrc
 
 #### Python packages
-RUN pip install torch==1.8.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html && pip cache purge
+#RUN pip install torch==1.8.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html && pip cache purge
+RUN pip install torch==1.10.0+cu111 -f https://download.pytorch.org/whl/torch_stable.html && pip cache purge
 COPY requirements/requirements.txt .
 COPY requirements/requirements-onebitadam.txt .
 COPY requirements/requirements-sparseattention.txt .
+COPY requirements/requirements-flashattention.txt .
 RUN pip install -r requirements.txt && pip install -r requirements-onebitadam.txt && \
     pip install -r requirements-sparseattention.txt && \
+    pip install -r requirements-flashattention.txt && \
     pip install protobuf==3.20.* && \
     pip cache purge
 
@@ -104,6 +107,12 @@ RUN python megatron/fused_kernels/setup.py install
 # Clear staging
 RUN mkdir -p /tmp && chmod 0777 /tmp
 
+## Install best_download
+RUN git clone https://github.com/EleutherAI/best-download
+RUN pip install -e best-download && \
+    pip install -r best-download/requirements-dev.txt 
+
 #### SWITCH TO mchorse USER
-USER mchorse
-WORKDIR /home/mchorse
+# USER 1008
+WORKDIR /workspace
+RUN git config --global --add safe.directory /workspace
