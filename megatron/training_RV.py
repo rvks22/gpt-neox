@@ -24,6 +24,8 @@ from functools import partial
 
 import math
 import sys
+import os
+import json
 
 import torch
 import deepspeed
@@ -57,8 +59,98 @@ from megatron.utils import (
 from megatron.model.gpt2_model import cross_entropy
 from eval_tasks import run_eval_harness
 
+#======================================================
+def frankenstuff(neox_args, use_cache = False):
 
-def pretrain(neox_args):
+    iteration = 8
+
+    # # load model
+    # model = get_model(neox_args, use_cache=False)
+    # optimizer, param_groups = get_optimizer(model=model, neox_args=neox_args)
+    # lr_scheduler = get_learning_rate_scheduler(optimizer=optimizer, neox_args=neox_args)
+
+    init_wandb(neox_args=neox_args)
+    timers = Timers(
+        use_wandb=neox_args.use_wandb, tensorboard_writer=neox_args.tensorboard_writer
+    )
+
+    # Initialize and get arguments, timers, and Tensorboard writer.
+    initialize_megatron(neox_args=neox_args)
+
+    """Setup model and optimizer."""
+    model = get_model(neox_args=neox_args, use_cache=use_cache)
+    optimizer, param_groups = get_optimizer(model=model, neox_args=neox_args)
+    lr_scheduler = get_learning_rate_scheduler(optimizer=optimizer, neox_args=neox_args)
+
+    if neox_args.deepspeed:
+        print_rank_0("DeepSpeed is enabled.")
+        if neox_args.no_load_optim:
+            assert optimizer is None
+            _model_params = None
+            _lr_scheduler = None
+        else:
+            _model_params = param_groups if optimizer is None else None
+            _lr_scheduler = lr_scheduler
+
+        model, optimizer, _, lr_scheduler = deepspeed.initialize(
+            model=model,
+            optimizer=optimizer,
+            args=neox_args,
+            lr_scheduler=_lr_scheduler,
+            dist_init_required=False,
+            model_parameters=_model_params,
+            config_params=neox_args.deepspeed_config,
+            mpu=mpu if not neox_args.is_pipe_parallel else None,
+        )
+        model.total_params = get_total_params(model.module)
+        print_rank_0(f' > total params: {"{:,}".format(model.total_params)}')
+
+        if neox_args.is_pipe_parallel:
+            model.set_has_attention_mask(True)
+            model.set_batch_fn(partial(get_batch_pipe, neox_args=neox_args))
+    else:
+        raise ValueError("Must be using deepspeed to run neox")
+
+    if neox_args.load is not None:
+        neox_args.iteration = load_checkpoint(
+            neox_args=neox_args,
+            model=model,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            iteration=iteration,
+        )
+        print_rank_0(
+            f"Loading checkpoint and starting from iteration {neox_args.iteration}"
+        )
+    else:
+        neox_args.iteration = 0
+
+
+    #==================================
+    print("===== understand model status ======")
+    print(type(model))
+    print(dir(model))
+    print("====================================")
+    tmpdict = model.state_dict()
+    print(tmpdict.keys())
+    tmpout = os.path.join(neox_args.save, 'state_dict_dump.json')
+    # with open(tmpout, 'w') as tf:
+    #     tf.write(json.dumps(tmpdict))
+    print('========end model status   =========')
+
+    # save model
+    save_checkpoint(
+        neox_args=neox_args,
+        iteration=8,
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+    )
+#======================================================
+
+def pretrain(neox_args, train_iter_start_pos = None, valid_iter_start_pos = None):
+    print('===== in PRETRAIN =======')
+    print(neox_args)
     """Main training program.
 
     This function will run the following in the order provided:
@@ -87,13 +179,25 @@ def pretrain(neox_args):
     )
     timers("model and optimizer").stop()
 
+    #@@RV added to check 100% alignment with previous checkpoint
+    save_checkpoint(
+                neox_args=neox_args,
+                iteration=neox_args.iteration,
+                model=model,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+            )
+
     # Data stuff.
     timers("train/valid/test data iterators").start()
     (
         train_data_iterator,
         valid_data_iterator,
         test_data_iterator,
-    ) = build_train_valid_test_data_iterators(neox_args=neox_args)
+    ) = build_train_valid_test_data_iterators(neox_args=neox_args,
+                                              train_iter_start_pos = train_iter_start_pos,
+                                              valid_iter_start_pos = valid_iter_start_pos
+                                              )
     timers("train/valid/test data iterators").stop()
 
     # Print setup timing.
@@ -102,6 +206,18 @@ def pretrain(neox_args):
     print_rank_0("training ...")
 
     iteration = neox_args.iteration
+    print(f'===== iteration = {iteration} ===========')
+
+    # #@@RV added to check 100% alignment with previous checkpoint
+    # this establishes that the build_train_valid_test_data_iterators modify the torch_rng_state in the model
+    # save_checkpoint(
+    #             neox_args=neox_args,
+    #             iteration=iteration+1,
+    #             model=model,
+    #             optimizer=optimizer,
+    #             lr_scheduler=lr_scheduler,
+    #         )
+
     if neox_args.do_train and neox_args.train_iters > 0:
         # edge case: save step 0 checkpoint if requested and we're starting from step 0
         if neox_args.save and 0 in neox_args.save_iters and iteration == 0:
@@ -121,10 +237,13 @@ def pretrain(neox_args):
             lr_scheduler=lr_scheduler,
             train_data_iterator=train_data_iterator,
             valid_data_iterator=valid_data_iterator,
+            #@@RV insert
+            # SKIP_BATCHES = neox_args.SKIP_BATCHES
         )
 
     if neox_args.do_valid:
         prefix = "the end of training for val data"
+        # RV_save_batch_to_file(what_to_save = f"pretrain.do_valid", where_to_save = neox_args.SAVE_BATCH_TO_FILE, prepend = f'iteration {iteration}')
         evaluate_and_print_results(
             neox_args=neox_args,
             prefix=prefix,
@@ -148,6 +267,7 @@ def pretrain(neox_args):
     if neox_args.do_test:
         # Run on test data.
         prefix = "the end of training for test data"
+        # RV_save_batch_to_file(what_to_save = f"pretrain.do_test", where_to_save = neox_args.SAVE_BATCH_TO_FILE, prepend = f'iteration {iteration}')
         evaluate_and_print_results(
             neox_args=neox_args,
             prefix=prefix,
@@ -161,7 +281,26 @@ def pretrain(neox_args):
         )
 
 
-def _get_batch(neox_args, tokenizer, keys, data, datatype):
+def RV_save_batch_to_file(what_to_save = None, where_to_save = None, prepend = None):
+    if isinstance(what_to_save, str):
+        textdump = what_to_save
+    elif isinstance(what_to_save, torch.Tensor):
+        newdump = what_to_save.cpu().numpy()
+        textdump = '|'.join([str(x) for x in newdump[0]])
+    else:
+        textdump = what_to_save #risky but hey
+
+    with open(where_to_save, 'a') as tf:
+        # tf.write(tokenizer.decode(tokens))
+        # print("newdump: type = {type(newdump)}, len={len(newdump)}")
+        # print(newdump)
+        tf.write('\n')
+        if prepend is not None: tf.write(prepend + ' ; ')
+        tf.write(textdump)
+        # tf.write('|'.join([str(x) for x in tokens[0]]))
+
+
+def _get_batch(neox_args, tokenizer, keys, data, datatype, infomemo = None):
     """Support function for get_batch / get_batch pipe (to avoid code repetition)"""
     data_b = mpu.broadcast_data(keys, data, datatype)
 
@@ -169,6 +308,13 @@ def _get_batch(neox_args, tokenizer, keys, data, datatype):
     tokens_ = data_b["text"].long()
     labels = tokens_[:, 1:].contiguous()
     tokens = tokens_[:, :-1].contiguous()
+
+    #@@RV start mod:
+    if neox_args.SAVE_BATCH_TO_FILE is not None:
+        tok = tokens.detach()
+        RV_save_batch_to_file(what_to_save = tok, where_to_save = neox_args.SAVE_BATCH_TO_FILE, prepend = f'_get_batch:{infomemo}')
+    #@@RV end mod
+
 
     # Get the masks and position ids.
     attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
@@ -180,7 +326,7 @@ def _get_batch(neox_args, tokenizer, keys, data, datatype):
     return tokens, labels, loss_mask, attention_mask, position_ids
 
 
-def get_batch(neox_args, data_iterator):
+def get_batch(neox_args, data_iterator, infomemo = None):
     """Generate a batch"""
 
     # Items and their type.
@@ -198,17 +344,18 @@ def get_batch(neox_args, data_iterator):
         keys=keys,
         data=data,
         datatype=datatype,
+        infomemo = infomemo,
     )
 
 
-def get_batch_pipe(data, neox_args):
+def get_batch_pipe(data, neox_args, infomemo = None):
     """A modification of get_batch() to work with the latest batch instead of an iterator."""
     # Items and their type.
     keys = ["text"]
     datatype = torch.int64
 
     tokens, labels, loss_mask, attention_mask, position_ids = _get_batch(
-        neox_args, neox_args.tokenizer, keys, data, datatype
+        neox_args, neox_args.tokenizer, keys, data, datatype, infomemo = infomemo
     )
 
     # unpack data
@@ -481,13 +628,13 @@ def backward_step(neox_args, timers, optimizer, model, loss):
         raise ValueError("Must be using deepspeed to run neox")
 
 
-def train_step(neox_args, timers, data_iterator, model, optimizer, lr_scheduler):
+def train_step(neox_args, timers, data_iterator, model, optimizer, lr_scheduler, iteration = 0):
     """Single training step."""
 
     # Pipeline parallelism schedules forward/backward/step
     if neox_args.is_pipe_parallel:
         reduced_loss = train_step_pipe(
-            neox_args=neox_args, timers=timers, model=model, data_iterator=data_iterator
+            neox_args=neox_args, timers=timers, model=model, data_iterator=data_iterator, iteration = iteration
         )
     else:
         losses = []
@@ -531,34 +678,46 @@ def train_step(neox_args, timers, data_iterator, model, optimizer, lr_scheduler)
     return reduced_loss, skipped_iter
 
 
-def train_step_pipe(neox_args, timers, model, data_iterator):
+def train_step_pipe(neox_args, timers, model, data_iterator, iteration = 0):
     """Single training step with DeepSpeed's pipeline parallel engine."""
 
     assert neox_args.deepspeed
-    print('===================================================')
-    print(f"====== iteration = {neox_args.iteration} =======")
+    # print('===================================================')
+    # print(f"====== iteration = {neox_args.iteration} =======")
     # print(type(model))
     # print(dir(model))
-    print(model.total_params)
+    # print(model.total_params)
     # print(type(data_iterator))
     # print(dir(data_iterator))
     # print(neox_args)
-    print('===================================================')
+    # print('===================================================')
     # newdata = next(data_iterator)
+    for i in range(neox_args.SKIP_BATCHES):
+        print(f"in train_step_pipe, burning through data batch {i}")
+        tok = next(data_iterator)['text']
+        # print(f"type(tok)={type(tok)}")
+        # print(tok.keys())
+        # print(tok)
+
+        #@@RV start mod:
+        if neox_args.SAVE_BATCH_TO_FILE is not None:
+            RV_save_batch_to_file(what_to_save = tok, where_to_save = neox_args.SAVE_BATCH_TO_FILE, prepend = f'iter={iteration},skip_batches {i}:')
+        #@@RV end mod
     toks = neox_args.tokenizer
     # print(type(toks))
     # print(dir(toks))
     # print(newdata)
-    print(f"eod_id={toks.eod_id}")
-    print(f"type(toks.eod_id)={type(toks.eod_id)}")
-    print(f"pad_id={toks.pad_id}")
+    # print(f"eod_id={toks.eod_id}")
+    # print(f"type(toks.eod_id)={type(toks.eod_id)}")
+    # print(f"pad_id={toks.pad_id}")
     # first_tok = newdata['text'][0]
     # print(f"first_tok={first_tok}")
     # print(toks.detokenize([int(x) for x in first_tok]))
     # print(data_iterator._rcvd_idx)
     # print(type(model))
     # print(dir(model))
-    print('===================================================')
+    # print('===================================================')
+    RV_save_batch_to_file(what_to_save = 'pretrain_step_pipe, b4 train_batch', where_to_save = neox_args.SAVE_BATCH_TO_FILE, prepend = f'iter={iteration}')
     loss = model.train_batch(data_iter=data_iterator)
     loss_dict = {"lm_loss": loss}
     # Don't break Megatron's timers because we changed code paths.
@@ -582,6 +741,8 @@ def train(
     lr_scheduler,
     train_data_iterator,
     valid_data_iterator,
+    #@@RV insert
+    # SKIP_BATCHES = 0,
 ):
     """Train the model function."""
 
@@ -610,6 +771,7 @@ def train(
             model=model,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
+            iteration = iteration,
         )
         iteration += 1
 
@@ -683,7 +845,7 @@ def train(
 
 
 def evaluate(
-    neox_args, forward_step_fn, data_iterator, model, verbose=False, timers=None
+    neox_args, forward_step_fn, data_iterator, model, verbose=False, timers=None, prefix = None
 ):
     """Evaluation.
     neox_args: NeoX Arguments
@@ -718,6 +880,7 @@ def evaluate(
                 else neox_args.gradient_accumulation_steps
             ):
                 # Forward evaluation
+                RV_save_batch_to_file(what_to_save = f"evaluate: {prefix}", where_to_save = neox_args.SAVE_BATCH_TO_FILE, prepend = f'iteration:{iteration}')
                 loss = forward_step_fn(
                     model=model,
                     data_iterator=data_iterator,
@@ -779,6 +942,7 @@ def evaluate_and_print_results(
         model=model,
         verbose=verbose,
         timers=timers,
+        prefix = prefix,
     )
     string = f" {chart_name} results at {prefix} | "
     for k, v in total_loss_dict.items():

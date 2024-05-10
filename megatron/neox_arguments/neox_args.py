@@ -977,6 +977,20 @@ class NeoXArgsTraining(NeoXArgsTemplate):
     Whether to calculate character level perplexity as well as token level perplexity. (may incur a time cost)
     """
 
+    SKIP_BATCHES: int = 0
+    """
+    Whether to skip the first SKIP_BATCHES of the data generator (for reproducibility / continuation of testing purposes)
+    """
+
+    SAVE_BATCH_TO_FILE: str = None
+    """
+    Whether to write batches of data to a file - for reproducibility access
+    """ 
+
+    DEBUG: bool = False
+    """
+    Whether to print additional information downstream
+    """
 
 @dataclass
 class NeoXArgsTextgen(NeoXArgsTemplate):

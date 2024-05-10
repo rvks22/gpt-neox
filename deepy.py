@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import logging
-import os
+import os, sys
 
 import deepspeed
 from deepspeed.launcher.runner import main
@@ -26,6 +26,25 @@ from megatron.utils import get_wandb_api_key
 
 
 neox_args = NeoXArgs.consume_deepy_args()
+#@@RV insert
+# neox_args.DEBUG = False
+# neox_args.SKIP_BATCHES = 0
+# neox_args.SAVE_BATCH_TO_FILE = '/workspace/Output/data_batch_1000.txt'
+neox_args.SAVE_BATCH_TO_FILE = neox_args.save + '/' + neox_args.SAVE_BATCH_TO_FILE
+
+print('===== in deepy.py ======')
+if neox_args.DEBUG:
+    print('===========================================================================')
+    print('NEOX_ARGS')
+    print('===========================================================================')
+    for k in sorted(list(neox_args.keys())):
+        print((k, neox_args[k]))
+    print('===========================================================================')
+# CREATE SOME FOLDERS IF THEY DON'T EXIST
+if not os.path.isdir(neox_args.save):
+    os.makedirs(neox_args.save)
+
+
 deepspeed_main_args = neox_args.get_deepspeed_main_args()
 
 # Extract wandb API key and inject into worker environments
@@ -34,10 +53,16 @@ if wandb_token is not None:
     deepspeed.launcher.runner.EXPORT_ENVS.append("WANDB_API_KEY")
     os.environ["WANDB_API_KEY"] = wandb_token
 
-print('===========================================================================')
-print(deepspeed_main_args)
-print('===========================================================================')
-sys.exit(5)
+print('===== in deepy.py ======')
+if neox_args.DEBUG:
+    print('===========================================================================')
+    print("DEEPSPEED_MAIN_ARGS")
+    print('===========================================================================')
+    print(deepspeed_main_args)
+    print('===========================================================================')
+
+
+# sys.exit(5)
 
 if __name__ == "__main__":
     main(deepspeed_main_args)
