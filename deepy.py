@@ -30,7 +30,7 @@ neox_args = NeoXArgs.consume_deepy_args()
 # neox_args.DEBUG = False
 # neox_args.SKIP_BATCHES = 0
 # neox_args.SAVE_BATCH_TO_FILE = '/workspace/Output/data_batch_1000.txt'
-neox_args.SAVE_BATCH_TO_FILE = neox_args.save + '/' + neox_args.SAVE_BATCH_TO_FILE
+# neox_args.SAVE_BATCH_TO_FILE = neox_args.save + '/' + neox_args.SAVE_BATCH_TO_FILE
 
 print('===== in deepy.py ======')
 if neox_args.DEBUG:

@@ -282,6 +282,9 @@ def pretrain(neox_args, train_iter_start_pos = None, valid_iter_start_pos = None
 
 
 def RV_save_batch_to_file(what_to_save = None, where_to_save = None, prepend = None):
+    if where_to_save is None:
+        return
+    
     if isinstance(what_to_save, str):
         textdump = what_to_save
     elif isinstance(what_to_save, torch.Tensor):
